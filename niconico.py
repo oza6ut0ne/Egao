@@ -1,86 +1,121 @@
-import math
+import queue
 import random
 import select
-import struct
 import socket
-import tkinter as tk
+import struct
 import threading
+import tkinter as tk
 
-TRANSPARENT_COLOR = '#010101'
-TEXT_COLOR = '#f0f0f0'
-FONT_SIZE = 40
+PORT = 2525
+TRANSPARENT_COLOR = '#0f0f0f'
+TEXT_COLOR = '#ffffff'
+TEXT_BORDER_COLOR = '#000000'
+FONT_SIZE = 26
+NUM_MAX_COMMENTS_IN_DISPLAY = 5
+REMAINING_MILLISECONDS = 3000
+FPS = 10
+INTERVAL = int(1000 / FPS)
 
-labels = []
-root = tk.Tk()
 running = True
 
 
-class AnimatingLabel(tk.Label):
-    def __init__(self, *args, **kwargs):
+class CommentCanvas(tk.Canvas):
+    def __init__(self, width, height, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.relx = 1.0
-        self.rely = random.random() * 0.95
-        length = len(kwargs['text'])
-        self.stepx = -0.0125 * min(2, max(1, math.log(max(1, length) / 7)))
+        self._width = width
+        self._height = height
+        self._comment_queue = queue.Queue()
+        self._texts = []
+
+    def add_comment(self, comment):
+        self._comment_queue.put(comment)
+
+    def _add_bordered_text(self, text):
+        bordered_text = []
+        x0 = self._width
+        y0 = 0.95 * random.random() * self._height
+
+        for x, y in [(x, y) for x in range(-1, 2) for y in range(-1, 2) if x != 0 or y != 0]:
+            bordered_text.append(self.create_text((x0 + x, y0 + y), text=text, anchor='nw',
+                                fill=TEXT_BORDER_COLOR, font=('', FONT_SIZE, 'bold')))
+
+        bordered_text.append(self.create_text((x0, y0), text=text, anchor='nw',
+                             fill=TEXT_COLOR, font=('', FONT_SIZE, 'bold')))
+
+        bbox = self.bbox(bordered_text[-1])
+        text_width = bbox[2] - bbox[0]
+        step_x = -(self._width + text_width) / (REMAINING_MILLISECONDS / INTERVAL)
+        self._texts.append((step_x, bordered_text))
+
+    def _remove_text(self, bordered_text):
+        for text in bordered_text:
+            self.delete(text)
+        self._texts.remove(bordered_text)
+
+    def _consume_comment(self):
+        if len(self._texts) < NUM_MAX_COMMENTS_IN_DISPLAY:
+            try:
+                comment = self._comment_queue.get(block=False)
+                self._add_bordered_text(comment)
+            except queue.Empty:
+                pass
 
     def draw(self):
-        self.relx += self.stepx
-        self.place(relx=self.relx, rely=self.rely)
+        self._consume_comment()
+        for step_x, bordered_text in self._texts:
+            for text in bordered_text:
+                self.move(text, step_x, 0)
+            if self.bbox(bordered_text[0])[2] < 0:
+                self._remove_text((step_x, bordered_text))
 
 
-def task():
-    global labels
-    for label in labels:
-        if label in root.children.values():
-            label.draw()
-            right = label.winfo_x() + label.winfo_width()
-            if right < 0:
-                label.destroy()
-                labels.remove(label)
-
-    root.after(30, task)
+def surrogate(string):
+    return ''.join(c if c <= '\uffff' else ''.join(
+                   chr(x) for x in struct.unpack('>2H', c.encode('utf-16be'))) for c in string)
 
 
-def recieve_comments():
-    global labels, root, running
-    s = socket.socket()
-    s.bind(('', 2525))
-    s.listen(5)
+def recieve_comments(canvas):
+    global running
+    server_sock = socket.socket()
+    server_sock.bind(('', PORT))
+    server_sock.listen(3)
 
     while running:
-        ready, _, _ = select.select([s], [], [], 1)
+        ready, _, _ = select.select([server_sock], [], [], 1)
         if ready:
-            ss, addr = s.accept()
-            comment = ss.recv(1024 * 10).decode().strip()
-            ss.close()
+            s, addr = ready[0].accept()
+            comment = s.recv(1024 * 10).decode().strip()
+            s.close()
             print(comment)
-            surrogated = ''.join(c if c <= '\uffff' else ''.join(
-                chr(x) for x in struct.unpack('>2H', c.encode('utf-16be'))) for c in comment)
-            label = AnimatingLabel(
-                root, text=surrogated, bg=TRANSPARENT_COLOR, fg=TEXT_COLOR, font=('', FONT_SIZE, 'bold'))
-            labels.append(label)
+            canvas.add_comment(surrogate(comment))
 
-    s.close()
+    server_sock.close()
+
+
+def task(root, canvas):
+    canvas.draw()
+    root.after(INTERVAL, task, root, canvas)
 
 
 def main():
-    global labels, root, running
+    global running
+
+    root = tk.Tk()
     root.title('comment')
     root.wm_attributes('-transparentcolor', TRANSPARENT_COLOR)
     root.config(bg=TRANSPARENT_COLOR)
     root.wm_attributes('-fullscreen', True)
     root.wm_attributes('-topmost', True)
+    root.update()
 
-    label = AnimatingLabel(
-        root, text='はろーわーるど', bg=TRANSPARENT_COLOR, fg=TEXT_COLOR, font=('', FONT_SIZE, 'bold'))
-    labels.append(label)
+    canvas = CommentCanvas(root.winfo_width(), root.winfo_height(), root,
+                           bg=TRANSPARENT_COLOR, bd=0, highlightthickness=0)
+    canvas.pack(expand=1, fill=tk.BOTH)
 
-    recieve_thread = threading.Thread(target=recieve_comments)
+    recieve_thread = threading.Thread(target=recieve_comments, args=(canvas,))
     recieve_thread.start()
-
-    root.after(30, task)
+    root.after(INTERVAL, task, root, canvas)
     root.mainloop()
-
     running = False
 
 
