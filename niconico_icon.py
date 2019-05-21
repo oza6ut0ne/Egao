@@ -66,9 +66,12 @@ class Comment(object):
         bbox = self._canvas.bbox(self._bordered_text[-1])
         text_width = bbox[2] - bbox[0]
         icon_height = bbox[3] - bbox[1]
+        try:
+            req = urllib.request.urlopen(icon_url)
+            pil_img = Image.open(io.BytesIO(req.read()))
+        except:
+            return
 
-        req = urllib.request.urlopen(icon_url)
-        pil_img = Image.open(io.BytesIO(req.read()))
         orig_width, orig_height = pil_img.size
         icon_width = orig_width * icon_height // orig_height
         pil_img = pil_img.resize((icon_width, icon_height))
